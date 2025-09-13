@@ -1,0 +1,82 @@
+🔹 Problem Statement in Simple Words
+
+People see potholes, garbage dumps, broken streetlights etc., but their complaints either never reach the right authority OR get lost in bureaucracy.
+Your system → lets users upload issue reports (photo + location + category), auto-classifies them, and forwards them to the right department for action.
+
+🔹 Core Features You Can Implement (Simplified)
+
+User Side (Mobile/Web App UI)
+
+Register/Login (basic auth, or skip and allow anonymous reporting with phone/email).
+
+Report Issue Form → Upload image + location (auto-fetch via GPS or manual pin on map) + category (dropdown: garbage/pothole/streetlight/etc.).
+
+Track Status → Users can see if the issue is “Pending / In Progress / Resolved”.
+
+Community View → Map/List of reported issues in their area.
+
+Admin Side (Dashboard)
+
+Department Login (e.g., municipal, electricity, roads).
+
+Issue Assignment → Issues get auto-tagged and sent to the right admin, or they can be filtered manually.
+
+Status Update → Admin marks issues as “in progress” or “resolved”.
+
+Backend Logic
+
+Store reports in a database (with photo, location, timestamp, status).
+
+Tag issues with categories → simple dropdown now (later you can add AI auto-detection).
+
+Map integration → Google Maps API or OpenStreetMap for simplicity.
+
+🔹 Tech Stack (2nd-Year Feasible)
+
+Frontend (UI):
+
+Mobile → Flutter (cross-platform, easy UI).
+
+Web → React.js (clean, responsive).
+
+Backend:
+
+Node.js + Express (lightweight, easy APIs).
+
+Firebase (if you want quick backend + authentication + database).
+
+Database:
+
+Firebase Firestore / Realtime DB (easy setup, reliable).
+
+OR MySQL/PostgreSQL (if you want SQL experience).
+
+Extras:
+
+Google Maps API (location pinning).
+
+Cloud Storage (Firebase Storage / AWS S3) for images.
+
+🔹 Keep it Simple for Now
+
+✅ Don’t overcomplicate with ML initially → just let the user choose category manually.
+✅ Don’t build huge dashboards → a simple table-based admin UI works.
+✅ Reliability comes from clean database design + easy UI, not from over-engineering.
+
+🔹 Possible Workflow (Simplified Flow)
+
+User opens app → clicks “Report Issue” → fills form → submits.
+
+Data saved in DB → categorized by type.
+
+Admin dashboard fetches new issues → shows them filtered by department.
+
+Admin updates status → user gets notification.
+
+🔹 What You Can Showcase in SIH
+
+Feasible prototype → working end-to-end (report → DB → admin update → user status).
+
+UI that’s clean & minimal → don’t overload with buttons, just main 3: Report, Track, Community.
+
+Future Scope (just to impress judges): ML for auto-categorization, escalation mechanism if not resolved in X days, gamification (rewarding citizens for reporting).

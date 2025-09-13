@@ -1,0 +1,71 @@
+import bcrypt
+import os
+from database import Database
+
+class Authentication:
+    def __init__(self):
+        self.db = Database()
+        self.session_secret = os.getenv('SESSION_SECRET', 'default_secret_key_change_in_production')
+    
+    def hash_password(self, password):
+        """Hash a password using bcrypt"""
+        salt = bcrypt.gensalt()
+        hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+        return hashed.decode('utf-8')
+    
+    def verify_password(self, password, hashed):
+        """Verify a password against its hash"""
+        return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+    
+    def register_user(self, username, email, password, phone, role='citizen'):
+        """Register a new user - all registrations default to citizen role"""
+        # Force citizen role for security - prevent privilege escalation
+        role = 'citizen'
+        
+        # Check if username already exists
+        existing_user = self.db.get_user_by_username(username)
+        if existing_user:
+            return False
+        
+        # Check if email already exists
+        existing_email = self.db.get_user_by_email(email)
+        if existing_email:
+            return False
+        
+        # Hash password
+        password_hash = self.hash_password(password)
+        
+        # Create user
+        user_id = self.db.create_user(username, email, password_hash, phone, role)
+        return user_id is not None
+    
+    def create_admin_user(self, username, email, password, phone):
+        """Create an admin user - should only be used by system administrators"""
+        # This method is for manual admin creation and should not be exposed in the UI
+        password_hash = self.hash_password(password)
+        user_id = self.db.create_user(username, email, password_hash, phone, 'admin')
+        return user_id is not None
+    
+    def authenticate_user(self, username, password):
+        """Authenticate a user by username and password"""
+        user = self.db.get_user_by_username(username)
+        
+        if user and self.verify_password(password, user['password_hash']):
+            # Remove password hash from returned user data
+            user_data = dict(user)
+            del user_data['password_hash']
+            return user_data
+        
+        return None
+    
+    def is_admin(self, user_id):
+        """Check if a user is an admin"""
+        # This would typically query the database
+        # For now, we'll assume this is handled in the user session
+        pass
+    
+    def validate_session(self, session_data):
+        """Validate a user session"""
+        # In a production app, you'd validate JWT tokens or session cookies
+        # For this demo, we'll rely on Streamlit's session state
+        return True

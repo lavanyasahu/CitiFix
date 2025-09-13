@@ -1,0 +1,752 @@
+import streamlit as st
+import pandas as pd
+import folium
+from streamlit_folium import st_folium
+from PIL import Image, UnidentifiedImageError
+import io
+import base64
+from datetime import datetime
+import os
+
+from database import Database
+from auth import Authentication
+from utils import get_category_color, format_timestamp, sanitize_input, get_status_emoji, CATEGORY_OPTIONS
+
+# Initialize database and auth
+@st.cache_resource
+def init_database():
+    return Database()
+
+@st.cache_resource
+def init_auth():
+    return Authentication()
+
+db = init_database()
+auth = init_auth()
+
+# Page configuration
+st.set_page_config(
+    page_title="Civic Issue Reporting System",
+    page_icon="🏛️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+def main():
+    # Initialize session state
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    if 'user_id' not in st.session_state:
+        st.session_state.user_id = None
+    if 'user_role' not in st.session_state:
+        st.session_state.user_role = None
+    if 'username' not in st.session_state:
+        st.session_state.username = None
+
+    # Sidebar navigation
+    with st.sidebar:
+        st.title("🏛️ Civic Reporter")
+        
+        if not st.session_state.authenticated:
+            page = st.selectbox(
+                "Navigation",
+                ["Login", "Register", "View Public Issues", "Track Issue"]
+            )
+        else:
+            if st.session_state.user_role == 'admin':
+                # Check if we need to override navigation from dashboard
+                if st.session_state.get('nav_target') == 'Manage Issues':
+                    st.session_state.admin_nav = 'Manage Issues'
+                    st.session_state.nav_target = None  # Clear the target
+                
+                page = st.selectbox(
+                    "Navigation",
+                    ["Admin Dashboard", "Manage Issues", "View All Issues", "Analytics"],
+                    key='admin_nav'
+                )
+                
+                # Use session state if available, otherwise default
+                page = st.session_state.get('admin_nav', 'Admin Dashboard')
+            else:
+                page = st.selectbox(
+                    "Navigation",
+                    ["Report Issue", "My Issues", "Community Issues", "Track Issue"]
+                )
+            
+            st.divider()
+            st.write(f"👤 Logged in as: **{st.session_state.username}**")
+            st.write(f"🔐 Role: **{st.session_state.user_role.title()}**")
+            
+            if st.button("Logout", type="secondary"):
+                st.session_state.authenticated = False
+                st.session_state.user_id = None
+                st.session_state.user_role = None
+                st.session_state.username = None
+                st.rerun()
+
+    # Main content based on navigation
+    if not st.session_state.authenticated:
+        if page == "Login":
+            login_page()
+        elif page == "Register":
+            register_page()
+        elif page == "View Public Issues":
+            public_issues_page()
+        elif page == "Track Issue":
+            track_issue_page()
+    else:
+        if st.session_state.user_role == 'admin':
+            if page == "Admin Dashboard":
+                admin_dashboard()
+            elif page == "Manage Issues":
+                manage_issues_page()
+            elif page == "View All Issues":
+                view_all_issues_page()
+            elif page == "Analytics":
+                analytics_page()
+        else:
+            if page == "Report Issue":
+                report_issue_page()
+            elif page == "My Issues":
+                my_issues_page()
+            elif page == "Community Issues":
+                community_issues_page()
+            elif page == "Track Issue":
+                track_issue_page()
+
+def login_page():
+    st.title("🔐 Login")
+    
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+        
+        if submitted:
+            if username and password:
+                user = auth.authenticate_user(username, password)
+                if user:
+                    st.session_state.authenticated = True
+                    st.session_state.user_id = user['id']
+                    st.session_state.user_role = user['role']
+                    st.session_state.username = user['username']
+                    st.success("Login successful!")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password")
+            else:
+                st.error("Please fill in all fields")
+
+def register_page():
+    st.title("📝 Register")
+    
+    with st.form("register_form"):
+        username = st.text_input("Username")
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        confirm_password = st.text_input("Confirm Password", type="password")
+        phone = st.text_input("Phone Number")
+        # Remove role selection - all new users default to citizen
+        role = "citizen"  # Force citizen role for all registrations
+        
+        submitted = st.form_submit_button("Register")
+        
+        if submitted:
+            if username and email and password and confirm_password and phone:
+                if password != confirm_password:
+                    st.error("Passwords do not match")
+                elif len(password) < 6:
+                    st.error("Password must be at least 6 characters long")
+                else:
+                    success = auth.register_user(username, email, password, phone, "citizen")
+                    if success:
+                        st.success("Registration successful! Please login.")
+                    else:
+                        st.error("Username or email already exists")
+            else:
+                st.error("Please fill in all fields")
+
+def report_issue_page():
+    st.title("📝 Report New Issue")
+    
+    with st.form("report_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            title = st.text_input("Issue Title*")
+            category = st.selectbox(
+                "Category*",
+                CATEGORY_OPTIONS
+            )
+            description = st.text_area("Description*", height=100)
+            
+        with col2:
+            uploaded_file = st.file_uploader(
+                "Upload Image*",
+                type=['png', 'jpg', 'jpeg'],
+                help="Please upload an image of the issue"
+            )
+            
+            # Location input
+            st.subheader("📍 Location")
+            location_method = st.radio(
+                "How would you like to set location?",
+                ["Click on Map", "Enter Coordinates"]
+            )
+            
+            if location_method == "Enter Coordinates":
+                latitude = st.number_input("Latitude", value=28.6139, format="%.6f")
+                longitude = st.number_input("Longitude", value=77.2090, format="%.6f")
+            else:
+                # Default to Delhi coordinates
+                latitude = 28.6139
+                longitude = 77.2090
+        
+        # Map for location selection
+        if location_method == "Click on Map":
+            st.subheader("🗺️ Click on map to select location")
+            m = folium.Map(location=[latitude, longitude], zoom_start=12)
+            
+            # Add a marker for the current location
+            folium.Marker(
+                [latitude, longitude],
+                popup="Current selected location",
+                tooltip="Click anywhere on map to select new location"
+            ).add_to(m)
+            
+            map_data = st_folium(m, width=700, height=400)
+            
+            # Update coordinates if map is clicked
+            if map_data and map_data.get('last_clicked'):
+                latitude = map_data['last_clicked']['lat']
+                longitude = map_data['last_clicked']['lng']
+                st.info(f"Selected location: {latitude:.6f}, {longitude:.6f}")
+        
+        submitted = st.form_submit_button("Submit Issue Report", type="primary")
+        
+        if submitted:
+            if (title and category and description and uploaded_file and 
+                latitude is not None and longitude is not None and
+                -90 <= latitude <= 90 and -180 <= longitude <= 180):
+                # Process uploaded image with validation
+                try:
+                    image = Image.open(uploaded_file)
+                    # Verify it's a valid image by accessing basic properties
+                    image.verify()
+                    # Reopen after verify (verify() invalidates the image)
+                    uploaded_file.seek(0)
+                    image = Image.open(uploaded_file)
+                    
+                    img_buffer = io.BytesIO()
+                    image.save(img_buffer, format='PNG')
+                    img_str = base64.b64encode(img_buffer.getvalue()).decode()
+                except (UnidentifiedImageError, OSError, Exception) as e:
+                    st.error("Invalid image file. Please upload a valid PNG, JPG, or other standard image format.")
+                    st.stop()
+                
+                # Create issue
+                issue_data = {
+                    'title': title,
+                    'description': description,
+                    'category': category,
+                    'latitude': latitude,
+                    'longitude': longitude,
+                    'image_data': img_str,
+                    'user_id': st.session_state.user_id,
+                    'status': 'pending'
+                }
+                
+                issue_id = db.create_issue(issue_data)
+                if issue_id:
+                    st.success(f"Issue reported successfully! Issue ID: {issue_id}")
+                    st.balloons()
+                else:
+                    st.error("Failed to submit issue. Please try again.")
+            else:
+                st.error("Please fill in all required fields and upload an image")
+
+def my_issues_page():
+    st.title("📋 My Issues")
+    
+    # Get user's issues
+    issues = db.get_issues_by_user(st.session_state.user_id)
+    
+    if not issues:
+        st.info("You haven't reported any issues yet. Click 'Report Issue' to get started!")
+        return
+    
+    # Status filter
+    status_filter = st.selectbox(
+        "Filter by Status",
+        ["All", "pending", "in_progress", "resolved"]
+    )
+    
+    # Filter issues
+    if status_filter != "All":
+        issues = [issue for issue in issues if issue['status'] == status_filter]
+    
+    # Display issues
+    for issue in issues:
+        with st.container():
+            col1, col2, col3 = st.columns([2, 1, 1])
+            
+            with col1:
+                st.subheader(f"🔸 {issue['title']}")
+                st.write(f"**Category:** {issue['category']}")
+                st.write(f"**Description:** {issue['description']}")
+            
+            with col2:
+                status_color = {
+                    'pending': '🟡',
+                    'in_progress': '🔵',
+                    'resolved': '🟢'
+                }
+                st.write(f"**Status:** {status_color.get(issue['status'], '⚪')} {issue['status'].title()}")
+                st.write(f"**Reported:** {format_timestamp(issue['created_at'])}")
+            
+            with col3:
+                if issue['image_data']:
+                    try:
+                        img_data = base64.b64decode(issue['image_data'])
+                        img = Image.open(io.BytesIO(img_data))
+                        st.image(img, width=150)
+                    except:
+                        st.write("📷 Image unavailable")
+                
+                if st.button(f"View Details", key=f"details_{issue['id']}"):
+                    show_issue_details(issue)
+            
+            st.divider()
+
+def community_issues_page():
+    st.title("🌍 Community Issues")
+    
+    # Get all issues
+    issues = db.get_all_issues()
+    
+    if not issues:
+        st.info("No issues reported in the community yet.")
+        return
+    
+    # Filters
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        category_filter = st.selectbox(
+            "Filter by Category",
+            ["All"] + CATEGORY_OPTIONS
+        )
+    
+    with col2:
+        status_filter = st.selectbox(
+            "Filter by Status",
+            ["All", "pending", "in_progress", "resolved"]
+        )
+    
+    with col3:
+        view_mode = st.selectbox("View Mode", ["Map View", "List View"])
+    
+    # Apply filters
+    filtered_issues = issues
+    if category_filter != "All":
+        filtered_issues = [issue for issue in filtered_issues if issue['category'] == category_filter]
+    if status_filter != "All":
+        filtered_issues = [issue for issue in filtered_issues if issue['status'] == status_filter]
+    
+    if view_mode == "Map View":
+        show_issues_map(filtered_issues)
+    else:
+        show_issues_list(filtered_issues)
+
+def show_issues_map(issues):
+    if not issues:
+        st.info("No issues match the selected filters.")
+        return
+    
+    # Create map centered on average location
+    if issues:
+        avg_lat = sum(issue['latitude'] for issue in issues) / len(issues)
+        avg_lng = sum(issue['longitude'] for issue in issues) / len(issues)
+    else:
+        avg_lat, avg_lng = 28.6139, 77.2090
+    
+    m = folium.Map(location=[avg_lat, avg_lng], zoom_start=11)
+    
+    # Add markers for each issue
+    for issue in issues:
+        color = get_category_color(issue['category'])
+        
+        # Sanitize user input to prevent XSS
+        popup_html = f"""
+        <div style="width: 200px;">
+            <b>{sanitize_input(issue['title'])}</b><br>
+            <b>Category:</b> {sanitize_input(issue['category'])}<br>
+            <b>Status:</b> {sanitize_input(issue['status'].title())}<br>
+            <b>Reported:</b> {format_timestamp(issue['created_at'])}<br>
+        </div>
+        """
+        
+        folium.Marker(
+            [issue['latitude'], issue['longitude']],
+            popup=folium.Popup(popup_html, max_width=250),
+            tooltip=sanitize_input(issue['title']),
+            icon=folium.Icon(color=color, icon='exclamation-sign')
+        ).add_to(m)
+    
+    st_folium(m, width=700, height=500)
+
+def show_issues_list(issues):
+    if not issues:
+        st.info("No issues match the selected filters.")
+        return
+    
+    for issue in issues:
+        with st.container():
+            col1, col2, col3 = st.columns([2, 1, 1])
+            
+            with col1:
+                st.subheader(f"🔸 {issue['title']}")
+                st.write(f"**Category:** {issue['category']}")
+                st.write(f"**Description:** {issue['description'][:100]}{'...' if len(issue['description']) > 100 else ''}")
+            
+            with col2:
+                status_color = {
+                    'pending': '🟡',
+                    'in_progress': '🔵',
+                    'resolved': '🟢'
+                }
+                st.write(f"**Status:** {status_color.get(issue['status'], '⚪')} {issue['status'].title()}")
+                st.write(f"**Reported:** {format_timestamp(issue['created_at'])}")
+            
+            with col3:
+                if st.button(f"View Details", key=f"community_details_{issue['id']}"):
+                    show_issue_details(issue)
+            
+            st.divider()
+
+def track_issue_page():
+    st.title("🔍 Track Issue")
+    st.info("Enter an Issue ID below to track the status and details of any reported issue.")
+    
+    issue_id = st.text_input("Enter Issue ID to track:").strip()  # Strip whitespace
+    
+    if st.button("Track Issue") and issue_id:
+        issue = db.get_issue_by_id(issue_id)
+        
+        if issue:
+            show_issue_details(issue, detailed=(st.session_state.get('user_role') == 'admin'))
+        else:
+            st.error("Issue not found. Please check the Issue ID.")
+    
+    # Add instructions for users
+    with st.expander("How to track an issue?"):
+        st.write("""
+        1. Get the Issue ID from the reporter or from public issue listings
+        2. Enter the exact Issue ID in the field above
+        3. Click 'Track Issue' to see the current status and details
+        
+        **Issue Status Meanings:**
+        - 🟡 **Pending**: Issue reported, waiting for review
+        - 🔵 **In Progress**: Issue is being worked on by authorities  
+        - 🟢 **Resolved**: Issue has been fixed
+        """)
+
+def admin_dashboard():
+    st.title("🛠️ Admin Dashboard")
+    
+    # Get statistics
+    stats = db.get_issue_statistics()
+    
+    # Display statistics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Issues", stats['total'])
+    
+    with col2:
+        st.metric("Pending Issues", stats['pending'])
+    
+    with col3:
+        st.metric("In Progress", stats['in_progress'])
+    
+    with col4:
+        st.metric("Resolved Issues", stats['resolved'])
+    
+    st.divider()
+    
+    # Recent issues
+    st.subheader("🕒 Recent Issues")
+    recent_issues = db.get_recent_issues(limit=10)
+    
+    if recent_issues:
+        for issue in recent_issues:
+            with st.container():
+                col1, col2, col3 = st.columns([2, 1, 1])
+                
+                with col1:
+                    st.write(f"**{issue['title']}** ({issue['category']})")
+                    st.caption(f"Reported by: User ID {issue['user_id']}")
+                
+                with col2:
+                    status_color = {
+                        'pending': '🟡',
+                        'in_progress': '🔵',
+                        'resolved': '🟢'
+                    }
+                    st.write(f"{status_color.get(issue['status'], '⚪')} {issue['status'].title()}")
+                
+                with col3:
+                    if st.button(f"Manage", key=f"admin_manage_{issue['id']}"):
+                        st.session_state.selected_issue = issue['id']
+                        st.session_state.admin_nav = 'Manage Issues'
+                        st.rerun()
+                
+                st.divider()
+    else:
+        st.info("No issues reported yet.")
+
+def manage_issues_page():
+    st.title("⚙️ Manage Issues")
+    
+    # Check if we came from dashboard with a selected issue
+    selected_issue_id = st.session_state.get('selected_issue')
+    if selected_issue_id:
+        st.info(f"📌 Managing Issue ID: {selected_issue_id}")
+        # Clear the selection after showing it
+        st.session_state.selected_issue = None
+    
+    # Filters
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        status_filter = st.selectbox(
+            "Filter by Status",
+            ["All", "pending", "in_progress", "resolved"]
+        )
+    
+    with col2:
+        category_filter = st.selectbox(
+            "Filter by Category",
+            ["All"] + CATEGORY_OPTIONS
+        )
+    
+    # Get issues based on filters
+    issues = db.get_all_issues()
+    
+    if status_filter != "All":
+        issues = [issue for issue in issues if issue['status'] == status_filter]
+    if category_filter != "All":
+        issues = [issue for issue in issues if issue['category'] == category_filter]
+    
+    if not issues:
+        st.info("No issues match the selected filters.")
+        return
+    
+    # Display issues with management options
+    for issue in issues:
+        # Auto-expand if this is the selected issue from dashboard
+        is_selected = issue['id'] == selected_issue_id
+        with st.expander(f"🔸 {issue['title']} - {issue['status'].title()}", expanded=is_selected):
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                st.write(f"**Category:** {issue['category']}")
+                st.write(f"**Description:** {issue['description']}")
+                st.write(f"**Location:** {issue['latitude']:.6f}, {issue['longitude']:.6f}")
+                st.write(f"**Reported:** {format_timestamp(issue['created_at'])}")
+                st.write(f"**Reported by:** User ID {issue['user_id']}")
+                
+                if issue['image_data']:
+                    try:
+                        img_data = base64.b64decode(issue['image_data'])
+                        img = Image.open(io.BytesIO(img_data))
+                        st.image(img, width=300, caption="Issue Image")
+                    except:
+                        st.write("📷 Image unavailable")
+            
+            with col2:
+                st.subheader("Update Status")
+                new_status = st.selectbox(
+                    "Change Status",
+                    ["pending", "in_progress", "resolved"],
+                    index=["pending", "in_progress", "resolved"].index(issue['status']),
+                    key=f"status_{issue['id']}"
+                )
+                
+                admin_notes = st.text_area(
+                    "Admin Notes (optional)",
+                    value=(issue.get('admin_notes') or ''),
+                    key=f"notes_{issue['id']}"
+                )
+                
+                if st.button(f"Update Issue", key=f"update_{issue['id']}"):
+                    # Only update admin notes if they've been changed
+                    current_notes = issue.get('admin_notes', '').strip()
+                    new_notes = admin_notes.strip() if admin_notes else ''
+                    notes_to_save = new_notes if new_notes != current_notes else current_notes
+                    
+                    success = db.update_issue_status(issue['id'], new_status, notes_to_save if notes_to_save else None)
+                    if success:
+                        st.success("Issue updated successfully!")
+                        st.rerun()
+                    else:
+                        st.error("Failed to update issue.")
+
+def view_all_issues_page():
+    st.title("👁️ View All Issues")
+    
+    issues = db.get_all_issues()
+    
+    if not issues:
+        st.info("No issues reported yet.")
+        return
+    
+    # Convert to DataFrame for better display
+    df_data = []
+    for issue in issues:
+        df_data.append({
+            'ID': issue['id'],
+            'Title': issue['title'],
+            'Category': issue['category'],
+            'Status': issue['status'].title(),
+            'Reporter': f"User {issue['user_id']}",
+            'Date': format_timestamp(issue['created_at'])
+        })
+    
+    df = pd.DataFrame(df_data)
+    st.dataframe(df, use_container_width=True)
+    
+    # Show map of all issues
+    st.subheader("🗺️ Issues Map")
+    show_issues_map(issues)
+
+def analytics_page():
+    st.title("📊 Analytics")
+    
+    issues = db.get_all_issues()
+    
+    if not issues:
+        st.info("No data available for analytics.")
+        return
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Status distribution
+        st.subheader("Status Distribution")
+        status_counts = {}
+        for issue in issues:
+            status_counts[issue['status']] = status_counts.get(issue['status'], 0) + 1
+        
+        if status_counts:
+            status_df = pd.DataFrame(list(status_counts.items()), columns=['Status', 'Count'])
+            st.bar_chart(status_df.set_index('Status'))
+        else:
+            st.info("No status data available")
+    
+    with col2:
+        # Category distribution
+        st.subheader("Category Distribution")
+        category_counts = {}
+        for issue in issues:
+            category_counts[issue['category']] = category_counts.get(issue['category'], 0) + 1
+        
+        if category_counts:
+            category_df = pd.DataFrame(list(category_counts.items()), columns=['Category', 'Count'])
+            st.bar_chart(category_df.set_index('Category'))
+        else:
+            st.info("No category data available")
+    
+    # Recent trends
+    st.subheader("📈 Recent Trends")
+    
+    # Group issues by date
+    from collections import defaultdict
+    daily_issues = defaultdict(int)
+    
+    for issue in issues:
+        date = issue['created_at'].split(' ')[0]  # Get date part
+        daily_issues[date] += 1
+    
+    if daily_issues:
+        trend_df = pd.DataFrame(list(daily_issues.items()), columns=['Date', 'Issues'])
+        trend_df['Date'] = pd.to_datetime(trend_df['Date'])
+        trend_df = trend_df.sort_values('Date')
+        st.line_chart(trend_df.set_index('Date'))
+    else:
+        st.info("No trend data available")
+
+def public_issues_page():
+    st.title("👁️ Public Issues")
+    st.info("View community reported issues. Register or login to report new issues.")
+    
+    issues = db.get_all_issues()
+    
+    if not issues:
+        st.info("No issues reported yet.")
+        return
+    
+    # Only show resolved and in-progress issues to public
+    public_issues = [issue for issue in issues if issue['status'] in ['in_progress', 'resolved']]
+    
+    if not public_issues:
+        st.info("No public issues to display.")
+        return
+    
+    # Show map and list
+    tab1, tab2 = st.tabs(["🗺️ Map View", "📋 List View"])
+    
+    with tab1:
+        show_issues_map(public_issues)
+    
+    with tab2:
+        show_issues_list(public_issues)
+
+def show_issue_details(issue, detailed=False):
+    # Show status with emoji for better visibility
+    status_emoji = get_status_emoji(issue['status'])
+    st.subheader(f"Issue Details: {issue['title']} {status_emoji}")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.write(f"**ID:** {issue['id']}")
+        st.write(f"**Category:** {issue['category']}")
+        st.write(f"**Status:** {status_emoji} {issue['status'].title()}")
+        st.write(f"**Description:** {issue['description']}")
+        st.write(f"**Location:** {issue['latitude']:.6f}, {issue['longitude']:.6f}")
+        st.write(f"**Reported:** {format_timestamp(issue['created_at'])}")
+        
+        # Show last updated time if different from created time
+        if issue.get('updated_at') and issue['updated_at'] != issue['created_at']:
+            st.write(f"**Last Updated:** {format_timestamp(issue['updated_at'])}")
+        
+        # Show admin notes if available (sanitized for display)
+        if issue.get('admin_notes') and issue['admin_notes'].strip():
+            st.write(f"**Official Notes:** {sanitize_input(issue['admin_notes'])}")
+        
+        if detailed and st.session_state.get('user_role') == 'admin':
+            st.write(f"**Reporter:** User ID {issue['user_id']}")
+    
+    with col2:
+        if issue['image_data']:
+            try:
+                img_data = base64.b64decode(issue['image_data'])
+                img = Image.open(io.BytesIO(img_data))
+                st.image(img, caption="Issue Image")
+            except:
+                st.write("📷 Image unavailable")
+    
+    # Show location on map
+    st.subheader("📍 Location")
+    m = folium.Map(location=[issue['latitude'], issue['longitude']], zoom_start=15)
+    folium.Marker(
+        [issue['latitude'], issue['longitude']],
+        popup=sanitize_input(issue['title']),
+        tooltip=sanitize_input(issue['category'])
+    ).add_to(m)
+    
+    st_folium(m, width=700, height=300)
+
+if __name__ == "__main__":
+    main()
